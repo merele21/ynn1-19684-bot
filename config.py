@@ -17,7 +17,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 _source_chat_raw = os.getenv("SOURCE_CHAT_ID", "")
 if not _source_chat_raw:
-    logger.warning("⚠️ SOURCE_CHAT_ID не задан в .env — пересылка из исходной группы работать не будет")
+    logger.warning("⚠️ SOURCE_CHAT_ID не задан в .env")
     SOURCE_CHAT_ID = 0
 else:
     try:
@@ -37,14 +37,13 @@ MAX_DELAY = 120  # секунд
 
 
 class ConfigManager:
-    """Менеджер для работы с конфигурацией хештегов"""
+    """Менеджер конфигурации"""
 
     def __init__(self, config_file: str = CONFIG_FILE):
         self.config_file = config_file
         self.config: Dict[str, Any] = {}
 
     async def load_config(self) -> Dict[str, Any]:
-        """Загрузить конфигурацию из файла"""
         try:
             async with aiofiles.open(self.config_file, 'r', encoding='utf-8') as f:
                 content = await f.read()
@@ -60,12 +59,12 @@ class ConfigManager:
             return self.config
 
     async def save_config(self) -> None:
-        """Сохранить конфигурацию в файл"""
         async with aiofiles.open(self.config_file, 'w', encoding='utf-8') as f:
             await f.write(json.dumps(self.config, ensure_ascii=False, indent=2))
 
+    # ── Хештеги ───────────────────────────────────────────────────────────────
+
     def get_hashtag_config(self, hashtag: str) -> Optional[Dict[str, Any]]:
-        """Получить конфигурацию для конкретного хештега"""
         return self.config.get("hashtags", {}).get(hashtag)
 
     async def add_hashtag(
@@ -77,13 +76,9 @@ class ConfigManager:
         needs_fsm: bool = False,
         description: str = ""
     ) -> bool:
-        """Добавить новый хештег в конфигурацию"""
-        # Валидация delay
         delay = max(0, min(delay, MAX_DELAY))
-
         if "hashtags" not in self.config:
             self.config["hashtags"] = {}
-
         self.config["hashtags"][hashtag] = {
             "needs_fsm": needs_fsm,
             "description": description,
@@ -91,12 +86,10 @@ class ConfigManager:
             "thread_id": thread_id,
             "delay": delay
         }
-
         await self.save_config()
         return True
 
     async def remove_hashtag(self, hashtag: str) -> bool:
-        """Удалить хештег из конфигурации"""
         if hashtag in self.config.get("hashtags", {}):
             del self.config["hashtags"][hashtag]
             await self.save_config()
@@ -104,78 +97,90 @@ class ConfigManager:
         return False
 
     def list_hashtags(self) -> Dict[str, Any]:
-        """Получить список всех хештегов"""
         return self.config.get("hashtags", {})
 
-    # ─────────────────────────────────────────────
-    # Методы для keyword_forwards
-    # ─────────────────────────────────────────────
+    # ── Keyword forwards ──────────────────────────────────────────────────────
+    #
+    # Схема одной записи:
+    # {
+    #   "source_chat_id":   int,           # супергруппа-источник
+    #   "source_thread_id": int | null,    # тред-источник (null = любой тред)
+    #   "mode":             "all"|"keyword",
+    #   "keyword":          str | null,    # паттерн; null для mode=all
+    #   "target_chat_id":   int,
+    #   "target_thread_id": int | null,
+    #   "forward_previous": bool           # только для mode=keyword
+    # }
+    # ─────────────────────────────────────────────────────────────────────────
 
     def list_keyword_forwards(self) -> List[Dict[str, Any]]:
-        """Получить список всех конфигов keyword_forwards"""
         return self.config.get("keyword_forwards", [])
+
+    def _kf_key(self, item: Dict[str, Any]) -> tuple:
+        """Составной уникальный ключ для записи keyword_forward"""
+        return (
+            item.get("source_chat_id"),
+            item.get("source_thread_id"),
+            item.get("keyword", ""),
+        )
 
     async def add_keyword_forward(
         self,
         source_chat_id: int,
-        keyword: str,
+        source_thread_id: Optional[int],
+        mode: str,                          # "all" | "keyword"
         target_chat_id: int,
         target_thread_id: Optional[int] = None,
-        forward_previous: bool = True
+        keyword: Optional[str] = None,
+        forward_previous: bool = True,
     ) -> bool:
-        """
-        Добавить правило пересылки по ключевому слову.
-
-        Args:
-            source_chat_id:    ID чата-источника (другая супергруппа)
-            keyword:           ключевое слово-триггер
-            target_chat_id:    куда пересылать
-            target_thread_id:  тред назначения (None = без треда)
-            forward_previous:  пересылать ли предыдущее сообщение
-        """
         if "keyword_forwards" not in self.config:
             self.config["keyword_forwards"] = []
 
-        # Избегаем дублей (same source + keyword)
-        for item in self.config["keyword_forwards"]:
-            if (
-                item.get("source_chat_id") == source_chat_id
-                and item.get("keyword", "").lower() == keyword.lower()
-            ):
-                # Обновляем существующий
-                item.update({
-                    "target_chat_id": target_chat_id,
-                    "target_thread_id": target_thread_id,
-                    "forward_previous": forward_previous,
-                })
+        new_record: Dict[str, Any] = {
+            "source_chat_id":   source_chat_id,
+            "source_thread_id": source_thread_id,
+            "mode":             mode,
+            "keyword":          keyword,
+            "target_chat_id":   target_chat_id,
+            "target_thread_id": target_thread_id,
+            "forward_previous": forward_previous,
+        }
+        new_key = self._kf_key(new_record)
+
+        for i, item in enumerate(self.config["keyword_forwards"]):
+            if self._kf_key(item) == new_key:
+                self.config["keyword_forwards"][i] = new_record
                 await self.save_config()
                 return True
 
-        self.config["keyword_forwards"].append({
-            "source_chat_id": source_chat_id,
-            "keyword": keyword.lower(),
-            "target_chat_id": target_chat_id,
-            "target_thread_id": target_thread_id,
-            "forward_previous": forward_previous,
-        })
+        self.config["keyword_forwards"].append(new_record)
         await self.save_config()
         return True
 
-    async def remove_keyword_forward(self, source_chat_id: int, keyword: str) -> bool:
-        """Удалить правило пересылки по ключевому слову"""
+    async def remove_keyword_forward(
+        self,
+        source_chat_id: int,
+        source_thread_id: Optional[int],
+        keyword: Optional[str] = None,
+    ) -> bool:
         kf = self.config.get("keyword_forwards", [])
-        new_kf = [
-            item for item in kf
-            if not (
-                item.get("source_chat_id") == source_chat_id
-                and item.get("keyword", "").lower() == keyword.lower()
+        new_kf = []
+        removed = False
+        for item in kf:
+            match_source = item.get("source_chat_id") == source_chat_id
+            match_thread = item.get("source_thread_id") == source_thread_id
+            match_kw = (keyword is None) or (
+                (item.get("keyword") or "").lower() == keyword.lower()
             )
-        ]
-        if len(new_kf) == len(kf):
-            return False
-        self.config["keyword_forwards"] = new_kf
-        await self.save_config()
-        return True
+            if match_source and match_thread and match_kw:
+                removed = True
+            else:
+                new_kf.append(item)
+        if removed:
+            self.config["keyword_forwards"] = new_kf
+            await self.save_config()
+        return removed
 
 
 # Глобальный экземпляр
