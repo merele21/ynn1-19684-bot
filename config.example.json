@@ -1,0 +1,24 @@
+{
+  "hashtags": {
+    "#example": {
+      "needs_fsm": false,
+      "chat_id": -1001234567890,
+      "thread_id": 1,
+      "delay": 0
+    },
+    "#закрытие": {
+      "needs_fsm": true,
+      "options": {
+        "single": {
+          "chat_id": -1001111111111,
+          "thread_id": 123
+        },
+        "mediagroup": {
+          "chat_id": -1002222222222,
+          "thread_id": 456,
+          "delay": 15
+        }
+      }
+    }
+  }
+}
