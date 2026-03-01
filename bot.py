@@ -67,7 +67,9 @@ async def main() -> None:
 
     logger.info("🤖 Бот запущен!")
     try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        update_types = dp.resolve_used_update_types()
+        logger.info(f"📋 Разрешённые типы апдейтов: {update_types}")
+        await dp.start_polling(bot, allowed_updates=update_types)
     finally:
         await bot.session.close()
         logger.info("🛑 Бот остановлен")

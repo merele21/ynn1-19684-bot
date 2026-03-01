@@ -34,13 +34,6 @@
   "keyword_forwards": [
     {
       "source_chat_id": -1003824216053,
-      "keyword": "asd",
-      "target_chat_id": -1003535351326,
-      "target_thread_id": 19,
-      "forward_previous": true
-    },
-    {
-      "source_chat_id": -1003824216053,
       "source_thread_id": 19,
       "mode": "keyword",
       "keyword": "товар дня",
