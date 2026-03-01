@@ -43,7 +43,7 @@
       "source_chat_id": -1003824216053,
       "source_thread_id": 19,
       "mode": "keyword",
-      "keyword": "товар",
+      "keyword": "товар дня",
       "target_chat_id": -1003535351326,
       "target_thread_id": 2,
       "forward_previous": true

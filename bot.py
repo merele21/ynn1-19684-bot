@@ -14,6 +14,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Для отладки keyword-пересылки раскомментируйте строку ниже:
+# logging.getLogger("handlers.forwarding").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 

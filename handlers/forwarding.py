@@ -4,19 +4,15 @@ forwarding.py
 Два независимых блока пересылки:
 
 БЛОК 1 — SOURCE_CHAT_ID + хештеги
-    Обрабатывает сообщения из SOURCE_CHAT_ID.
-    Пересылка по хештегам, поддержка FSM и delay.
-
 БЛОК 2 — Другие супергруппы + keyword_forwards
-    Два режима:
-      mode=all     — пересылать ВСЕ сообщения из конкретного треда-источника
-                     в тред-цель без каких-либо условий.
-      mode=keyword — пересылать только если:
-                       1. Сообщение содержит keyword-паттерн.
-                       2. Предыдущее сообщение (prev) является медиа
-                          (фото / видео / аудио). Если prev — не медиа,
-                          триггер игнорируется.
-                     Порядок пересылки: сначала prev, затем триггер.
+
+  mode=all     — пересылать ВСЕ сообщения из треда-источника в тред-цель.
+  mode=keyword — пересылать только если:
+                   1. Текст содержит keyword-паттерн.
+                   2. Предыдущее сообщение (prev) является медиа
+                      (фото / видео / аудио). Если prev — не медиа,
+                      триггер игнорируется.
+                 Порядок пересылки: сначала prev, затем триггер.
 """
 
 import asyncio
@@ -215,18 +211,9 @@ def _keyword_to_regex(keyword: str) -> re.Pattern:
     """
     Компилирует пользовательский паттерн в регулярное выражение.
 
-    Правила:
       • '*' внутри токена → .{0,5}  (до 5 любых символов)
       • Пробел между токенами → .{0,50}  (токены могут разделяться другими словами)
       • Регистр игнорируется
-
-    Примеры:
-      "итого"         → найдёт «Итого», «ИТОГО»
-      "товар* дн*"    → найдёт «товары дня», «товаров за дня»
-      "закрыт* смен*" → найдёт «закрытие смены», «закрыто всей смены»
-
-    Важно: корень слова должен совпадать буквально.
-    «дн*» найдёт «дня/дней/дни», но НЕ «день» (там корень «де»).
     """
     tokens = keyword.strip().split()
     parts = []
@@ -242,30 +229,49 @@ def _get_pattern(keyword: str) -> re.Pattern:
     return _pattern_cache[keyword]
 
 
-# ── Хелперы для поиска конфига ────────────────────────────────────────────────
+# ── thread_id сообщения ───────────────────────────────────────────────────────
 
 def _msg_thread(message: Message) -> Optional[int]:
-    """Вернуть thread_id сообщения (None если не в топике)"""
-    return message.message_thread_id if message.is_topic_message else None
+    """
+    Возвращает thread_id сообщения.
 
+    ВАЖНО: НЕ используем is_topic_message — у медиасообщений (фото, видео)
+    этот флаг может быть False даже внутри топика, хотя message_thread_id
+    при этом корректно выставлен. Берём напрямую.
+    """
+    return message.message_thread_id  # None если не в топике
+
+
+# ── Поиск конфигов ────────────────────────────────────────────────────────────
 
 def _find_configs_for_message(message: Message) -> List[Dict[str, Any]]:
     """
-    Найти все keyword-конфиги, которые применимы к данному сообщению.
-    Учитывает chat_id + source_thread_id.
-    Возвращает список, т.к. для одного чата/треда может быть несколько правил.
+    Найти все keyword-конфиги, применимые к данному сообщению.
+    Совпадение: chat_id + source_thread_id (точное, без None-wildcard).
     """
     chat_id = message.chat.id
     thread_id = _msg_thread(message)
+
+    logger.debug(
+        f"[find_configs] chat={chat_id} thread={thread_id} "
+        f"total_configs={len(config_manager.list_keyword_forwards())}"
+    )
+
     result = []
     for cfg in config_manager.list_keyword_forwards():
-        if cfg.get("source_chat_id") != chat_id:
-            continue
+        cfg_chat   = cfg.get("source_chat_id")
         cfg_thread = cfg.get("source_thread_id")
-        # cfg_thread=None означает «любой тред» (не рекомендуется, но допускается)
-        if cfg_thread is not None and cfg_thread != thread_id:
+
+        if cfg_chat != chat_id:
+            logger.debug(f"  skip: chat {cfg_chat} != {chat_id}")
             continue
+        if cfg_thread != thread_id:
+            logger.debug(f"  skip: thread {cfg_thread} != {thread_id}")
+            continue
+
+        logger.debug(f"  match: mode={cfg.get('mode')} keyword={cfg.get('keyword')!r}")
         result.append(cfg)
+
     return result
 
 
@@ -315,7 +321,6 @@ async def _forward_any(
             **kw,
         )
     elif message.sticker:
-        # sticker не поддерживает message_thread_id — форвардим нативно
         await message.forward(chat_id=target_chat_id)
     elif message.text:
         await message.bot.send_message(text=message.text, **kw)
@@ -330,99 +335,118 @@ async def handle_keyword_source(message: Message, state: FSMContext) -> None:
     """
     Обработчик для всех чатов, кроме SOURCE_CHAT_ID.
 
-    Для каждого подходящего конфига:
-
-      mode=all:
-        Пересылать любое сообщение из треда-источника в тред-цель.
-        Не сохраняет prev (не нужно).
-
-      mode=keyword:
-        1. Каждое НЕ-триггерное сообщение сохраняется как prev для своего
-           (chat_id, thread_id).
-        2. Если текст сообщения совпадает с keyword-паттерном:
-           a. Проверяем prev — если prev не медиа, триггер ИГНОРИРУЕТСЯ.
-           b. Если prev — медиа: пересылаем prev, затем триггерное сообщение.
+      mode=all:     пересылать любое сообщение из треда-источника.
+      mode=keyword: триггер по паттерну; prev обязан быть медиа, иначе игнор.
     """
-    # SOURCE_CHAT_ID обрабатывается отдельным хендлером выше
     if message.chat.id == SOURCE_CHAT_ID:
         return
 
+    chat_id   = message.chat.id
+    thread_id = _msg_thread(message)
+    text      = message.text or message.caption or ""
+
+    # ── Подробное логирование каждого входящего сообщения ────────────────────
+    msg_type = (
+        "photo"    if message.photo    else
+        "video"    if message.video    else
+        "audio"    if message.audio    else
+        "document" if message.document else
+        "sticker"  if message.sticker  else
+        "text"     if message.text     else
+        "other"
+    )
+    logger.info(
+        f"[kw] incoming: chat={chat_id} thread={thread_id} "
+        f"type={msg_type} text={text[:60]!r}"
+    )
+
     configs = _find_configs_for_message(message)
     if not configs:
+        logger.info(f"[kw] no configs matched for chat={chat_id} thread={thread_id}")
         return
 
-    chat_id = message.chat.id
-    thread_id = _msg_thread(message)
     prev_key = (chat_id, thread_id)
-    text = message.text or message.caption or ""
-
-    # Флаг: было ли сообщение обработано хотя бы одним mode=keyword триггером
     triggered_as_keyword = False
 
     for cfg in configs:
-        mode = cfg.get("mode", "keyword")
-        target_chat_id = cfg["target_chat_id"]
+        mode             = cfg.get("mode", "keyword")
+        target_chat_id   = cfg["target_chat_id"]
         target_thread_id = cfg.get("target_thread_id")
 
-        # ── mode=all ────────────────────────────────────────────────────────
+        # ── mode=all ─────────────────────────────────────────────────────────
         if mode == "all":
             try:
                 await _forward_any(message, target_chat_id, target_thread_id)
                 logger.info(
-                    f"✅ [all] {chat_id}/{thread_id} -> "
+                    f"[kw][all] ✅ {chat_id}/{thread_id} -> "
                     f"{target_chat_id}/{target_thread_id}"
                 )
             except Exception as e:
-                logger.error(f"❌ [all] forward error: {e}")
-            continue  # к следующему конфигу
-
-        # ── mode=keyword ─────────────────────────────────────────────────────
-        keyword = cfg.get("keyword") or ""
-        forward_previous = cfg.get("forward_previous", True)
-
-        if not keyword or not _get_pattern(keyword).search(text):
-            # Не триггер — просто сохраняем как prev
-            # (сохраним после цикла, ниже)
+                logger.error(f"[kw][all] ❌ forward error: {e}")
             continue
 
-        # Нашли триггер
+        # ── mode=keyword ──────────────────────────────────────────────────────
+        keyword          = cfg.get("keyword") or ""
+        forward_previous = cfg.get("forward_previous", True)
+
+        if not keyword:
+            logger.warning(f"[kw][keyword] пустой паттерн в конфиге, пропускаем")
+            continue
+
+        pattern_match = _get_pattern(keyword).search(text)
+        logger.info(
+            f"[kw][keyword] pattern={keyword!r} "
+            f"text={text[:60]!r} match={bool(pattern_match)}"
+        )
+
+        if not pattern_match:
+            # Не триггер — запомним как prev ниже
+            continue
+
+        # ── Нашли триггер ────────────────────────────────────────────────────
         triggered_as_keyword = True
+        prev = last_messages.get(prev_key)
+
+        logger.info(
+            f"[kw][keyword] TRIGGER '{keyword}' | "
+            f"forward_previous={forward_previous} | "
+            f"prev={('media' if _is_media(prev) else 'not_media') if prev else 'None'}"
+        )
 
         if forward_previous:
-            prev = last_messages.get(prev_key)
-
-            # Если prev не медиа — игнорируем этот триггер
             if not _is_media(prev):
                 logger.info(
-                    f"⏭ [keyword] Триггер '{keyword}' в {chat_id}/{thread_id} "
-                    f"проигнорирован: prev не медиа"
+                    f"[kw][keyword] IGNORED — prev не медиа "
+                    f"(chat={chat_id} thread={thread_id})"
                 )
                 continue
 
             try:
-                # 1. Пересылаем prev (медиа)
                 await _forward_any(prev, target_chat_id, target_thread_id)
                 await asyncio.sleep(0.3)
-                # 2. Пересылаем само триггерное сообщение
                 await _forward_any(message, target_chat_id, target_thread_id)
                 logger.info(
-                    f"✅ [keyword] '{keyword}' {chat_id}/{thread_id} -> "
-                    f"{target_chat_id}/{target_thread_id}"
+                    f"[kw][keyword] ✅ '{keyword}' "
+                    f"{chat_id}/{thread_id} -> {target_chat_id}/{target_thread_id}"
                 )
             except Exception as e:
-                logger.error(f"❌ [keyword] forward error: {e}")
+                logger.error(f"[kw][keyword] ❌ forward error: {e}")
         else:
-            # prev не нужен — пересылаем только триггер
             try:
                 await _forward_any(message, target_chat_id, target_thread_id)
                 logger.info(
-                    f"✅ [keyword/no-prev] '{keyword}' {chat_id}/{thread_id} -> "
-                    f"{target_chat_id}/{target_thread_id}"
+                    f"[kw][keyword/no-prev] ✅ '{keyword}' "
+                    f"{chat_id}/{thread_id} -> {target_chat_id}/{target_thread_id}"
                 )
             except Exception as e:
-                logger.error(f"❌ [keyword/no-prev] error: {e}")
+                logger.error(f"[kw][keyword/no-prev] ❌ error: {e}")
 
-    # Обновляем prev только если сообщение НЕ было триггером
-    # (триггерное сообщение не должно становиться prev для следующего)
+    # Обновляем prev только если сообщение не было триггером keyword
     if not triggered_as_keyword:
+        prev_before = last_messages.get(prev_key)
         last_messages[prev_key] = message
+        logger.debug(
+            f"[kw] prev updated: chat={chat_id} thread={thread_id} "
+            f"type={msg_type} "
+            f"(was {'None' if prev_before is None else prev_before.message_id})"
+        )
