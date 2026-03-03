@@ -145,7 +145,10 @@ async def forward_simple_message(
             # Парсим store_id из текста сообщения
             # Пример: "#регистер YNN1-19684" → store_id = "YNN1-19684"
             parts = message.text.split()
-            store_id = parts[1].upper() if len(parts) > 1 else None
+            store_id = next(
+                (p.upper() for p in parts if not p.startswith("#") and not p.startswith("/")),
+                None
+            )
 
             if not store_id:
                 await message.answer("❌ Не указан store_id")

@@ -9,7 +9,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # URL внутреннего API rbot — оба бота на одной машине, localhost
-RBOT_API_URL = "http://127.0.0.1:8001/internal/register"
+RBOT_API_URL = "http://127.0.0.1:8765/internal/register"
 
 # Должен совпадать с INTERNAL_API_TOKEN в rbot/bot/internal_api.py
 RBOT_API_TOKEN = "show me love"
