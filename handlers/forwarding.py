@@ -25,6 +25,7 @@ from aiogram.types import Message, MessageEntity
 from aiogram.fsm.context import FSMContext
 
 from config import SOURCE_CHAT_ID, config_manager
+from utils.rbot_api import register_store_in_rbot
 from utils import extract_hashtags, remove_hashtag_from_text
 from handlers.fsm import ForwardingStates, create_type_selection_keyboard
 
@@ -140,25 +141,31 @@ async def forward_simple_message(
         # ── Специальная обработка: хештеги-команды ───────────────────────────
         # Для хештегов из _COMMAND_HASHTAGS текст вида "/register YNN1-19684"
         # отправляется с entity bot_command, чтобы целевой бот распознал команду.
-        elif hashtag in _COMMAND_HASHTAGS and clean and clean.startswith("/"):
-            cmd_text = clean.strip()
-            cmd_part = cmd_text.split()[0]  # первое слово — сама команда
-            await message.bot.send_message(
-                chat_id=target_chat_id,
-                text=cmd_text,
-                message_thread_id=target_thread_id,
-                entities=[
-                    MessageEntity(
-                        type="bot_command",
-                        offset=0,
-                        length=len(cmd_part),
-                    )
-                ],
+        elif hashtag in _COMMAND_HASHTAGS:
+            # Парсим store_id из текста сообщения
+            # Пример: "#регистер YNN1-19684" → store_id = "YNN1-19684"
+            parts = message.text.split()
+            store_id = parts[1].upper() if len(parts) > 1 else None
+
+            if not store_id:
+                await message.answer("❌ Не указан store_id")
+                return
+
+            bot_info = await message.bot.get_me()
+            result = await register_store_in_rbot(
+                telegram_id=bot_info.id,
+                store_id=store_id,
+                username=bot_info.username,
+                full_name=bot_info.full_name
             )
-            logger.info(
-                f"✅ Command forward: {hashtag} '{cmd_text}' "
-                f"-> {target_chat_id}/{target_thread_id}"
-            )
+
+            if result.get("ok"):
+                if result.get("created"):
+                    logger.info(f"✅ Store {store_id} registered in rbot DB")
+                else:
+                    logger.info(f"ℹ️ Store {store_id} already registered in rbot DB")
+            else:
+                logger.error(f"❌ Failed to register store: {result.get('error')}")
 
         # ── Обычная текстовая пересылка ───────────────────────────────────────
         elif clean:
