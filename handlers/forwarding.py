@@ -21,7 +21,7 @@ import re
 from typing import Optional, Dict, Any, List, Tuple
 
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, MessageEntity
 from aiogram.fsm.context import FSMContext
 
 from config import SOURCE_CHAT_ID, config_manager
@@ -115,6 +115,10 @@ async def _perform_delayed_forwarding(key: str, bot) -> None:
         del pending_forwards[key]
 
 
+# Хештеги, текст которых нужно отправлять как команду Telegram (bot_command entity)
+_COMMAND_HASHTAGS = {"#регистер"}
+
+
 async def forward_simple_message(
     message: Message,
     hashtag: str,
@@ -132,13 +136,39 @@ async def forward_simple_message(
                 caption=clean,
                 message_thread_id=target_thread_id,
             )
+
+        # ── Специальная обработка: хештеги-команды ───────────────────────────
+        # Для хештегов из _COMMAND_HASHTAGS текст вида "/register YNN1-19684"
+        # отправляется с entity bot_command, чтобы целевой бот распознал команду.
+        elif hashtag in _COMMAND_HASHTAGS and clean and clean.startswith("/"):
+            cmd_text = clean.strip()
+            cmd_part = cmd_text.split()[0]  # первое слово — сама команда
+            await message.bot.send_message(
+                chat_id=target_chat_id,
+                text=cmd_text,
+                message_thread_id=target_thread_id,
+                entities=[
+                    MessageEntity(
+                        type="bot_command",
+                        offset=0,
+                        length=len(cmd_part),
+                    )
+                ],
+            )
+            logger.info(
+                f"✅ Command forward: {hashtag} '{cmd_text}' "
+                f"-> {target_chat_id}/{target_thread_id}"
+            )
+
+        # ── Обычная текстовая пересылка ───────────────────────────────────────
         elif clean:
             await message.bot.send_message(
                 chat_id=target_chat_id,
                 text=clean,
                 message_thread_id=target_thread_id,
             )
-        logger.info(f"✅ Simple forward: {hashtag} -> {target_chat_id}/{target_thread_id}")
+            logger.info(f"✅ Simple forward: {hashtag} -> {target_chat_id}/{target_thread_id}")
+
     except Exception as e:
         logger.error(f"❌ Simple forward error: {e}")
 

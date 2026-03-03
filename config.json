@@ -33,12 +33,12 @@
   },
   "keyword_forwards": [
     {
-      "source_chat_id": -1003824216053,
-      "source_thread_id": 19,
+      "source_chat_id": -1003535351326,
+      "source_thread_id": 2,
       "mode": "keyword",
       "keyword": "товар дня",
-      "target_chat_id": -1003535351326,
-      "target_thread_id": 2,
+      "target_chat_id": -1003824216053,
+      "target_thread_id": 19,
       "forward_previous": true
     }
   ]
